@@ -1282,8 +1282,15 @@ export function createExports({ onChange = () => {}, captions = subtitlesForExpo
               const k = pictureRect(kind, { w: f.w, h: f.h }, doc.stage, row.box).w / f.w;
               f = { ...f, w: Math.max(1, Math.round(f.w * k)), h: Math.max(1, Math.round(f.h * k)) };
             }
+            const _style = String(row.style ?? '').replace(/\s+/g, ' ');
+            const _flipped = /animation[^;]*\bmirror\b/.test(_style);
+            const _positioned = _style.length > 0 && (_style.match(/[^;]+:/g) ?? []).every((d) => /^(left|top|width|height)\s*:/.test(d.trim()));
+            const _extraClass = String(row.class ?? '').split(/\s+/).filter((x) => x && x !== 'cover');
             pictures.push({ id: row.id, kind, src: row.src, path, at: c.at, end: c.end, from: c.from, speed: c.speed, box: row.box,
-              track: ti, hidden: Boolean(track.hidden), styled: Boolean(row.class || row.style), ...(fade ? { faded: true } : {}), facts: f });
+              track: ti, hidden: Boolean(track.hidden),
+              styled: Boolean(_extraClass.length || (_style.length > 0 && !_flipped && !_positioned)),
+              ...(_flipped ? { flip: { horizontal: true, vertical: false } } : {}),
+              ...(fade ? { faded: true } : {}), facts: f });
           }
           if (kind === 'sound' || kind === 'video') {
             const f = await factsOf(path);
@@ -1316,7 +1323,7 @@ export function createExports({ onChange = () => {}, captions = subtitlesForExpo
 
       const timeline = planNleTimeline({ stage: doc.stage, duration: duration || 0.001, pictures, sounds },
         { title, fps, audio: mode, media: ask.media ?? 'copy', mediaDir: join(final, 'media'), stems: [...stems.keys()],
-          audioTracks: fcp ? 'source' : 'roles', alpha: prores ? 'prores4444' : 'png' });
+          audioTracks: fcp ? 'source' : 'roles', alpha: prores ? 'prores4444' : 'png', target: ask.format });
       const staged = (/** @type {import('./nle.mjs').NleFile} */ f) => join(staging, 'media', basename(f.path));
 
       /* each web page (and each picture Basic Motion can't place) drawn alone, full frame, with alpha. Several are drawn at

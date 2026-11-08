@@ -103,8 +103,8 @@ const PLATFORM = /** @type {Record<DraftApp, object>} */ ({
 });
 
 /** A clip's picture settings: none (as placed), or scaled and moved. */
-const clipSettings = (/** @type {number} */ scale, /** @type {number} */ x, /** @type {number} */ y) => ({
-  alpha: 1, flip: { horizontal: false, vertical: false }, rotation: 0, scale: { x: scale, y: scale }, transform: { x, y },
+const clipSettings = (/** @type {number} */ scale, /** @type {number} */ x, /** @type {number} */ y, flip) => ({
+  alpha: 1, flip: { horizontal: flip?.horizontal === true, vertical: flip?.vertical === true }, rotation: 0, scale: { x: scale, y: scale }, transform: { x, y },
 });
 
 /**
@@ -184,9 +184,9 @@ export function jianyingDraft(timeline, opts) {
     materialOf.set(key, id);
     return id;
   };
-  const speed = () => {
+  const speed = (/** @type {number} */ value = 1) => {
     const id = hex();
-    materials.speeds.push({ curve_speed: null, id, mode: 0, speed: 1, type: 'speed' });
+    materials.speeds.push({ curve_speed: null, id, mode: 0, speed: value, type: 'speed' });
     return id;
   };
 
@@ -220,11 +220,14 @@ export function jianyingDraft(timeline, opts) {
         const scale = round6((c.motion ? c.motion.scale / 100 : 1) / fit);
         const x = round6((c.motion?.center.h ?? 0) * 2), y = round6(-(c.motion?.center.v ?? 0) * 2);
         const level = c.linkGroup && ownSound.has(c.linkGroup) ? /** @type {number} */ (ownSound.get(c.linkGroup)) : 0;
+        /* a clip that carries its own sound at a speed (the draft speeds them together) says its level here */
+        const ownVolume = c.volume ?? level;
         return segment({
           material_id: material(file, 'video'), target_timerange: span(c.start, c.end),
           source_timerange: file.video?.still ? { start: 0, duration: us(c.end) - us(c.start) } : span(c.in, c.out),
-          visible: t.enabled && c.enabled, volume: level, last_nonzero_volume: level || 1,
-          extra_material_refs: [speed()], clip: clipSettings(scale, x, y), uniform_scale: { on: true, value: 1 },
+          visible: t.enabled && c.enabled, volume: ownVolume, last_nonzero_volume: ownVolume || 1,
+          speed: c.speed ?? 1,
+          extra_material_refs: [speed(c.speed ?? 1)], clip: clipSettings(scale, x, y, c.flip), uniform_scale: { on: true, value: 1 },
           hdr_settings: { intensity: 1, mode: 1, nits: 1000 }, render_index: index,
         });
       }),

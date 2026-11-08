@@ -45,7 +45,11 @@ import { exactRate } from '../../src/rate.mjs';
  *   the sound of; `fade`: its fades in and out, film seconds (fitted to its length)
  * @typedef {{ stage: { w: number, h: number }, duration: number, pictures: NlePicture[], sounds: NleSound[] }} NleFilm
  * @typedef {{ title: string, fps: number, audio: 'clips' | 'stems', media: 'copy' | 'link', mediaDir: string,
- *   stems?: SoundRole[], audioTracks?: 'roles' | 'source', alpha?: NleAlpha }} NlePlanOptions
+ *   stems?: SoundRole[], audioTracks?: 'roles' | 'source', alpha?: NleAlpha, target?: 'xml' | 'jianying' | 'capcut' }} NlePlanOptions
+ *   `target`: the editor the plan is written for. 'jianying'/'capcut' (a draft format that natively speaks source
+ *   ranges, speed and flip) relaxes baking: a video at another speed keeps its source file and its range — its own
+ *   sound rides the picture clip (the draft speeds both together); a plain mirror becomes the clip's flip. FCP7
+ *   xmeml can say none of that, so it keeps baking.
  * @typedef {'png' | 'prores4444'} NleAlpha How a picture with alpha is written, in a MOV (default ProRes 4444)
  * @typedef {{ timebase: number, ntsc: boolean, fps: number }} NleRate
  * @typedef {{ value: string, rate: NleRate }} NleTimecode
@@ -61,7 +65,8 @@ import { exactRate } from '../../src/rate.mjs';
  *   video?: { w: number, h: number, alpha: boolean, still: boolean, fps?: number }, audio?: { channels: number, sampleRate: number }, timecode?: NleTimecode }} NleFile
  * @typedef {{ id: string, name: string, fileId: string, start: number, end: number, in: number, out: number, enabled: boolean,
  *   motion?: { scale: number, center: { h: number, v: number } }, gain?: number,
- *   levels?: { when: number, value: number }[], linkGroup?: string, sourceRow?: string }} NleClip
+ *   levels?: { when: number, value: number }[], linkGroup?: string, sourceRow?: string,
+ *   speed?: number, flip?: { horizontal: boolean, vertical: boolean }, volume?: number }} NleClip
  *   Sequence frames [start, end), file frames [in, out); `gain` linear; `levels` its gain's keyframes (its fades),
  *   frames from the clip's first
  * @typedef {{ name: string, enabled: boolean, clips: NleClip[], sourceTrack?: number, role?: SoundRole }} NleTrack
@@ -186,6 +191,7 @@ function sourceAudioGroups(sounds) {
  * @param {NleFilm} film @param {NlePlanOptions} opts @returns {NleTimeline}
  */
 export function planNleTimeline(film, opts) {
+  const jy = opts.target === 'jianying' || opts.target === 'capcut';
   const rate = nleRate(opts.fps);
   const sourceTracks = opts.audioTracks === 'source';
   const { stage } = film;
@@ -271,18 +277,25 @@ export function planNleTimeline(film, opts) {
       const file = addFile({ ...mediaPath(p.id, 'mov'), job: { kind: 'render', clip: p.id, frames: len }, durationFrames: len, video: { w: stage.w, h: stage.h, alpha: true, still: false } });
       visual.push({ track: p.track, ...span, clip: { id: clipId(), name: p.id, fileId: file.id, ...span, in: 0, out: len, enabled: !p.hidden, ...link } });
     };
-    /* a clip with a look of its own (the film's CSS: a crop, round corners) is drawn as the film draws it */
-    if (p.kind === 'page' || p.styled || p.faded || !p.facts || (p.kind === 'video' && Math.abs(p.speed - 1) > 1e-6)) { bake(); continue; }
+    /* a clip with a look of its own (the film's CSS: a crop, round corners) is drawn as the film draws it.
+       On a draft target a speed change and a plain mirror are the format's own words: the clip keeps its source
+       (its range lengthens by the speed, its timeline length stays whole frames) and a mirror is the clip's flip. */
+    if (p.kind === 'page' || p.faded || !p.facts) { bake(); continue; }
+    if (p.styled || (!jy && p.kind === 'video' && Math.abs(p.speed - 1) > 1e-6)) { bake(); continue; }
+    const atSpeed = (jy && p.kind === 'video' && Math.abs(p.speed - 1) > 1e-6) ? p.speed : 1;
+    const sourceLen = Math.round(len * atSpeed);
     const placement = containMotion(p.facts, stage, p.box);
     if (placement.kind === 'bake') { bake(); continue; }
     const inFrame = p.kind === 'still' ? 0 : toFrame(p.from, rate);
-    const file = sourceFile(p, p.kind, inFrame + len);
-    const out = reach(file, inFrame + len);
+    const file = sourceFile(p, p.kind, inFrame + sourceLen);
+    const out = reach(file, inFrame + sourceLen);
     if (out <= inFrame) continue;
     /** @type {NleClip} */
     const clip = {
-      id: clipId(), name: p.id, fileId: file.id, start: span.start, end: span.start + out - inFrame, in: inFrame, out, enabled: !p.hidden,
+      id: clipId(), name: p.id, fileId: file.id, start: span.start, end: span.start + Math.round((out - inFrame) / atSpeed), in: inFrame, out, enabled: !p.hidden,
       ...link,
+      ...(atSpeed !== 1 ? { speed: p.speed } : {}),
+      ...(p.flip ? { flip: p.flip } : {}),
       ...(placement.kind === 'motion' ? { motion: placement.motion } : {}),
     };
     if (p.kind === 'video') footage.set(p.id, { clip, file, picture: p });
@@ -328,6 +341,13 @@ export function planNleTimeline(film, opts) {
       let file;
       let inFrame;
       const faded = Boolean(s.fade && (s.fade[0] > 0 || s.fade[1] > 0));
+      /* on a draft target a footage sound at another speed rides its picture clip (the draft speeds picture and
+         sound together, in sync by construction): no WAV of its own, the picture clip carries the level */
+      if (jy && !faded && linked && Math.abs(s.speed - 1) > 1e-6
+        && Math.abs(linked.picture.from - s.from) < 0.002 && Math.abs(linked.picture.at - s.at) < 0.002) {
+        linked.clip.volume = round6(Math.min(3.98109, s.volume));
+        continue;
+      }
       if (Math.abs(s.speed - 1) > 1e-6 || faded) {
         /* another speed: an editor would play the source at its own speed, so the part played comes slowed or sped
            (its pitch kept), as the film plays it, as a WAV of its own exactly as long as its clip: the source seconds
